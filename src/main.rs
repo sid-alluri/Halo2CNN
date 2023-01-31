@@ -97,45 +97,45 @@ impl<F:Field> LogRegChip<F>  {
         let selmul = meta.selector();
 
   
-        // meta.create_gate("conv", |meta|{
+        meta.create_gate("conv", |meta|{
 
-        //     let s = meta.query_selector(selmul);
+            let s = meta.query_selector(selmul);
 
-        //     let mut im = vec![];
-        //     for i in 0..imlen{
-        //         let buf = meta.query_advice(image.data, Rotation(i as i32));
-        //         im.push(buf);
-        //     }
-        //     let mut ker = vec![];
-        //     for j in 0..kerlen{
-        //         let buf = meta.query_advice(kernel.data, Rotation(j as i32));
-        //         ker.push(buf);
-        //     }
-        //     let mut con = vec![];
-        //     for i in 0..conlen{
-        //         let buf = meta.query_advice(inter.data, Rotation(i as i32));
-        //         con.push(buf);
-        //     }
+            let mut im = vec![];
+            for i in 0..imlen{
+                let buf = meta.query_advice(image.data, Rotation(i as i32));
+                im.push(buf);
+            }
+            let mut ker = vec![];
+            for j in 0..kerlen{
+                let buf = meta.query_advice(kernel.data, Rotation(j as i32));
+                ker.push(buf);
+            }
+            let mut con = vec![];
+            for i in 0..conlen{
+                let buf = meta.query_advice(inter.data, Rotation(i as i32));
+                con.push(buf);
+            }
 
-        //     let mut condash = vec![];
-        //     let mut diff = vec![];
-        //     for i in 0..conlen{
-        //     let mut cal_conv = Expression::Constant(F::ZERO);
-        //     for j in 0..kerlen{
-        //         let xyz = im[i+j].clone();
-        //         let yxz = ker[j].clone();
-        //         cal_conv =  cal_conv.add(xyz.mul(yxz));
+            let mut condash = vec![];
+            let mut diff = vec![];
+            for i in 0..conlen{
+            let mut cal_conv = Expression::Constant(F::ZERO);
+            for j in 0..kerlen{
+                let xyz = im[i+j].clone();
+                let yxz = ker[j].clone();
+                cal_conv = cal_conv + (xyz*yxz);
 
-        //     }
-        //     condash.push(cal_conv);
-        //     let buf = condash[i].clone().sub(con[i].clone());
-        //     diff.push(buf)
+            }
+            condash.push(cal_conv);
+            let buf = condash[i].clone() - (con[i].clone());
+            diff.push(buf)
 
-        //     }
+            }
 
-        //     Constraints::with_selector(s, diff)
+            Constraints::with_selector(s, diff)
             
-        // });
+        });
         
 
         LogRegConfig{
@@ -178,10 +178,12 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
     
         let convvalue = layouter.assign_region(|| "layer1", |mut region|{
            
+            config.selmul.enable(&mut region, 0)?;
             
 
             let mut imgcells = vec![];
             for i in 0..imlen{
+
                 let i_cell = region.assign_advice(||"image".to_owned()+&i.to_string(),
                  config.image.data, 
                  i, 
@@ -200,7 +202,7 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
 
             let mut convcells = vec![];
             for i in 0..conlen{
-                config.selmul.enable(&mut region, i)?;
+
                 let mut buf_image = vec![];
                 let mut convop = Value::known(F::ZERO);
                 for j in 0..kerlen{
@@ -243,7 +245,7 @@ static conlen: usize = imlen-kerlen+1;
 
 fn main(){
 
-    let k = 18;
+    let k = 16;
 
         let mut rng = rand::thread_rng();
         let mut mvec = Vec::new();
