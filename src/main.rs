@@ -9,12 +9,13 @@ use halo2_proofs::poly::Rotation;
 use halo2_proofs::{dev::MockProver, pasta::Fp};
 
 #[derive(Debug,Clone)]
-struct OneDVec<F: Field> {
-    data: Vec<F>,
+struct TwoDVec<F: Field> {
+    data: Vec<Vec<F>>,
 }
 
-impl<F: Field> OneDVec<F> {
-    pub fn new(a: Vec<F>)->Self{
+impl<F: Field> TwoDVec<F> {
+    pub fn new(a: Vec<Vec<F>>)->Self{
+
         Self{
             data: a,
      }
@@ -22,53 +23,57 @@ impl<F: Field> OneDVec<F> {
 
 }
 #[derive(Debug,Clone)]
-struct AdviceVector<F: Field>{
-    data: Column<Advice>,
+struct InstVector<F: Field>{
+    data: Vec<Column<Instance>>,
     len: usize,
     _marker: PhantomData<F>,
 
 }
 
-impl<F: Field>  AdviceVector<F>{
-    pub fn new_adv_vec(meta: &mut ConstraintSystem<F>, len: usize) -> AdviceVector<F>{
+impl<F: Field>  InstVector<F>{
+    pub fn new_ins_vec(meta: &mut ConstraintSystem<F>, vec_size: usize, len: usize) -> InstVector<F>{
 
-    
-            let buf = meta.advice_column();
-            meta.enable_equality(buf);
-        
+        let mut instbufarr = vec![];
+        for _i in 0..vec_size{
+                let buf = meta.instance_column();
+                meta.enable_equality(buf);
+                instbufarr.push(buf);
+            }
 
             Self {
-                data: buf,
+                data: instbufarr,
                 len,
                 _marker: PhantomData,
             }
         }
     }
 
-    #[derive(Debug,Clone)]
-    struct InstVector<F: Field>{
-        data: Column<Instance>,
-        len: usize,
-        _marker: PhantomData<F>,
-    
-    }
-    
-    impl<F: Field>  InstVector<F>{
-        pub fn new_ins_vec(meta: &mut ConstraintSystem<F>, len: usize) -> InstVector<F>{
-    
-        
-                let buf = meta.instance_column();
+#[derive(Debug,Clone)]
+struct AdviceVector<F: Field>{
+    data: Vec<Column<Advice>>,
+    len: usize,
+    _marker: PhantomData<F>,
+}
+
+impl<F: Field>  AdviceVector<F>{
+    pub fn new_adv_vec(meta: &mut ConstraintSystem<F>, vec_size: usize, len: usize) -> AdviceVector<F>{
+        let mut advbufarr = vec![];
+        for _i in 0..vec_size{
+                let buf = meta.advice_column();
                 meta.enable_equality(buf);
-            
-    
-                Self {
-                    data: buf,
-                    len,
-                    _marker: PhantomData,
-                }
+                advbufarr.push(buf);
+            }
+
+            Self {
+                data: advbufarr,
+                len,
+                _marker: PhantomData,
+
             }
         }
-    #[derive(Debug,Clone)]
+    }
+
+#[derive(Debug,Clone)]
 struct LogRegConfig<F: Field>{
     image: AdviceVector<F>,
     kernel: AdviceVector<F>,
@@ -90,10 +95,10 @@ impl<F:Field> LogRegChip<F>  {
     
     pub fn configure(meta: &mut ConstraintSystem<F>) -> LogRegConfig<F> {
         
-        let image = AdviceVector::new_adv_vec(meta, imlen);
-        let kernel = AdviceVector::new_adv_vec(meta, kerlen);
-        let inter = AdviceVector::new_adv_vec(meta, conlen) ;
-        let y = InstVector::new_ins_vec(meta, conlen);
+        let image = AdviceVector::new_adv_vec(meta, imwid, imlen);
+        let kernel = AdviceVector::new_adv_vec(meta, kerwid, kerlen);
+        let inter = AdviceVector::new_adv_vec(meta, conwid, conlen) ;
+        let y = InstVector::new_ins_vec(meta, conwid, conlen);
         let selmul = meta.selector();
 
   
@@ -101,37 +106,51 @@ impl<F:Field> LogRegChip<F>  {
 
             let s = meta.query_selector(selmul);
 
-            let mut im = vec![];
-            for i in 0..imlen{
-                let buf = meta.query_advice(image.data, Rotation(i as i32));
-                im.push(buf);
+            let mut imgcells = vec![];
+            for i in 0..imwid{
+                imgcells.push(Vec::new());
+                for j in 0..imlen{
+                    let buf = meta.query_advice(image.data[i], Rotation(j as i32));
+                    imgcells[i].push(buf);
+                }
             }
-            let mut ker = vec![];
-            for j in 0..kerlen{
-                let buf = meta.query_advice(kernel.data, Rotation(j as i32));
-                ker.push(buf);
+
+            let mut kercells = vec![];
+            for i in 0..kerwid{
+                kercells.push(Vec::new());
+                for j in 0..kerlen{
+                    let buf = meta.query_advice(kernel.data[i], Rotation(j as i32));
+                    kercells[i].push(buf);
+                }
             }
-            let mut con = vec![];
-            for i in 0..conlen{
-                let buf = meta.query_advice(inter.data, Rotation(i as i32));
-                con.push(buf);
+
+            let mut concells = vec![];
+            for i in 0..conwid{
+                concells.push(Vec::new());
+                for j in 0..conlen{
+                    let buf = meta.query_advice(inter.data[i], Rotation(j as i32));
+                    concells[i].push(buf);
+                }
             }
 
             let mut condash = vec![];
             let mut diff = vec![];
-            for i in 0..conlen{
-            let mut cal_conv = Expression::Constant(F::ZERO);
-            for j in 0..kerlen{
-                let xyz = im[i+j].clone();
-                let yxz = ker[j].clone();
-                cal_conv = cal_conv + (xyz*yxz);
-
+            for i in 0..conwid{
+                condash.push(vec![]);
+                for j in 0..conlen {
+                    let mut conval = Expression::Constant(F::ZERO);                 
+                    // let mut conval = Expression::Constant(F::ONE);   // A bug to test circuit               
+                    for k in 0..kerwid{
+                        for l in 0..kerlen{
+                            conval = conval + (imgcells[i+k][j+l].clone()*kercells[k][l].clone());
+                        }
+                    }
+                condash[i].push(conval);   
+                let buf = condash[i][j].clone() - (concells[i][j].clone());
+                diff.push(buf);
             }
-            condash.push(cal_conv);
-            let buf = condash[i].clone() - (con[i].clone());
-            diff.push(buf)
-
-            }
+            
+        }
 
             Constraints::with_selector(s, diff)
             
@@ -155,8 +174,8 @@ impl<F:Field> LogRegChip<F>  {
 #[derive(Debug,Clone)]
 
 struct LogRegCircuit<F: Field>{
-    mdata: OneDVec<F>,
-    xdata: OneDVec<F>,
+    mdata: TwoDVec<F>,
+    xdata: TwoDVec<F>,
 }
 
 impl<F: Field> Circuit<F> for LogRegCircuit<F>{
@@ -182,44 +201,51 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
             
 
             let mut imgcells = vec![];
-            for i in 0..imlen{
+            for i in 0..imwid{
+                imgcells.push(Vec::new());
+                for j in 0..imlen{
 
-                let i_cell = region.assign_advice(||"image".to_owned()+&i.to_string(),
-                 config.image.data, 
-                 i, 
-                 || Value::known(image[i]))?;
-                imgcells.push(i_cell);   
+                let i_cell = region.assign_advice(||"image".to_owned()+&i.to_string()+&j.to_string(),
+                 config.image.data[i], 
+                 j, 
+                 || Value::known(image[i][j]))?;
+                imgcells[i].push(i_cell);   
+                };
             };
 
             let mut kercells = vec![];
-            for j in 0..kerlen{
-                let k_cell = region.assign_advice(||"kernel".to_owned()+&j.to_string(),
-                 config.kernel.data, 
-                 j, 
-                 || Value::known(kernel[j]))?;
-                kercells.push(k_cell);   
+            for i in 0..kerwid{
+                kercells.push(Vec::new());
+                for j in 0..kerlen{
+
+                let k_cell = region.assign_advice(||"kernel".to_owned()+&i.to_string()+&j.to_string(),
+                    config.kernel.data[i], 
+                    j, 
+                    || Value::known(kernel[i][j]))?;
+                kercells[i].push(k_cell);   
+                };
             };
 
             let mut convcells = vec![];
-            for i in 0..conlen{
-
-                let mut buf_image = vec![];
-                let mut convop = Value::known(F::ZERO);
-                for j in 0..kerlen{
-                    let xyz = &imgcells[i+j];
-                    buf_image.push(xyz);
-                }
-                for k in 0..kerlen{
-                    convop = convop + (buf_image[k].value().copied() * kercells[k].value());
-                }                
-                let con_cell = region.assign_advice(||"conv".to_owned()+&i.to_string(),
-                 config.inter.data, 
-                 i, 
-                 || convop)?;
-                convcells.push(con_cell);   
+            for i in 0..conwid{
+                convcells.push(vec![]);
+                for j in 0..conlen {
+                    let mut conval = Value::known(F::ZERO);                    
+                    for k in 0..kerwid{
+                        for l in 0..kerlen{
+                            conval = conval + (imgcells[i+k][j+l].value().copied()*kercells[k][l].value());
+                        };
+                    };
+                
+                   
+                let con_cell = region.assign_advice(||"conv".to_owned()+&i.to_string()+&j.to_string(),
+                 config.inter.data[i], 
+                 j, 
+                 || conval)?;
+                convcells[i].push(con_cell);   
             };
             
-
+        };
             
 
             Ok(convcells)
@@ -228,9 +254,11 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
         });
 
         let yxz = convvalue.unwrap().clone();
-        Ok(for i in 0..conlen{
-        let xyz = &yxz[i];
-        layouter.constrain_instance(xyz.cell() , config.y.data, i);
+        Ok(for i in 0..conwid{
+            for j in 0..conlen{
+        let xyz = &yxz[i][j];
+        layouter.constrain_instance(xyz.cell() , config.y.data[i], j);
+         } 
         })
         
       
@@ -238,50 +266,92 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
     
 }
 
-static imlen: usize = 16;
-static kerlen: usize = 9;
-static conlen: usize = imlen-kerlen+1;
 
+// Alter the dims here //
+
+static imlen: usize = 4;
+static kerlen: usize = 2;
+static conlen: usize = imlen-kerlen+1;
+static imwid: usize = 4;
+static kerwid: usize = 2;
+static conwid: usize = imwid-imwid+1;
 
 fn main(){
 
     let k = 16;
 
         let mut rng = rand::thread_rng();
+        
+
+        
+        // Random Filter
+        let mut filter = Vec::new();
+        for i in 0..kerwid{
         let mut mvec = Vec::new();
-        let mut xvec = Vec::new();
-        let mut yvec = Vec::new();
-        for i in 0..kerlen{
-            let mut buf = Fp::random(&mut rng);
-            mvec.push(buf);
+            for j in 0..kerlen{
+                let mut buf = Fp::random(&mut rng);
+                mvec.push(buf);
+         }
+         filter.push(mvec);
         }
     
-        for i in 0..imlen{
-            let buf = Fp::random(&mut rng);
-            xvec.push(buf);
+        // Random Image
+        let mut image = Vec::new();
+        for i in 0..imwid{
+        let mut xvec = Vec::new();
+            for j in 0..imlen{
+                let mut buf = Fp::random(&mut rng);
+                xvec.push(buf);
+         }
+         image.push(xvec);
+        }
+
+        // Calculating Output
+
+        let mut convimage = vec![];
+        for i in 0..conwid{
+            convimage.push(Vec::new());
+            for j in 0..conlen {
+                let mut conval = Fp::ZERO;
+                for k in 0..kerwid{
+                    for l in 0..kerlen{
+                        conval.add_assign(image[i+k][j+l].clone().mul(&filter[k][l]));
+                    }
+                }
+            convimage[i].push(conval);
+            }
         }
         
-        for i in 0..conlen{
-            let mut z = Fp::ZERO;
-            for j in 0..kerlen{
-                z.add_assign(xvec[i+j].clone().mul(&mvec[j]));
+        // Wrong Output
+
+        let mut wrongconvimage = vec![];
+        for i in 0..conwid{
+            wrongconvimage.push(Vec::new());
+            for j in 0..conlen {
+                let mut conval = Fp::ONE; // Bug Here
+                for k in 0..kerwid{
+                    for l in 0..kerlen{
+                        conval.add_assign(image[i+k][j+l].clone().mul(&filter[k][l]));
+                    }
+                }
+            wrongconvimage[i].push(conval);
             }
-            yvec.push(z);
         }
+        
 
         let circuit = LogRegCircuit {
-            mdata: OneDVec::new(mvec),
-            xdata: OneDVec::new(xvec),
+            mdata: TwoDVec::new(filter),
+            xdata: TwoDVec::new(image),
         };
 
-        let public_input = yvec;
-        let prover = MockProver::run(k, &circuit, vec![public_input.clone()]);
-        prover.unwrap().assert_satisfied();
-        // match prover.unwrap().verify(){
-        //     Ok(()) => { println!("Yes proved!")},
-        //     Err(_) => {println!("Not proved!")}
+        let public_input = convimage; // wrongconvimage use this for testing
+        let prover = MockProver::run(k, &circuit, public_input.clone());
+        // prover.unwrap().assert_satisfied();
+        match prover.unwrap().verify(){
+            Ok(()) => { println!("Yes proved!")},
+            Err(_) => {println!("Not proved!")}
 
-        // }
+        }
        
 }
 
