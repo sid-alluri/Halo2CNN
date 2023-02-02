@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 ff = "0.13"
-halo2_proofs = { git = "https://github.com/zcash/halo2.git" }
+halo2_proofs = "0.2.0"
 rand = "0.8.5"

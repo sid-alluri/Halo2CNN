@@ -1,19 +1,23 @@
-use ff::Field;
-use rand;
+// use ff::FieldExt;
+use halo2_proofs::arithmetic::FieldExt;
+use std::cmp::Ordering;
+use rand::{self, Rng};
 use std::marker::PhantomData;
 use std::ops::{AddAssign};
 use std::vec;
-use halo2_proofs::circuit::{AssignedCell, Chip, Layouter, Region, SimpleFloorPlanner, Value, layouter};
+use halo2_proofs::circuit::{Chip, Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector, Expression, Constraints};
 use halo2_proofs::poly::Rotation;
 use halo2_proofs::{dev::MockProver, pasta::Fp};
 
+
+
 #[derive(Debug,Clone)]
-struct TwoDVec<F: Field> {
+struct TwoDVec<F: FieldExt> {
     data: Vec<Vec<F>>,
 }
 
-impl<F: Field> TwoDVec<F> {
+impl<F: FieldExt> TwoDVec<F> {
     pub fn new(a: Vec<Vec<F>>)->Self{
 
         Self{
@@ -23,14 +27,14 @@ impl<F: Field> TwoDVec<F> {
 
 }
 #[derive(Debug,Clone)]
-struct InstVector<F: Field>{
+struct InstVector<F: FieldExt>{
     data: Vec<Column<Instance>>,
     len: usize,
     _marker: PhantomData<F>,
 
 }
 
-impl<F: Field>  InstVector<F>{
+impl<F: FieldExt>  InstVector<F>{
     pub fn new_ins_vec(meta: &mut ConstraintSystem<F>, vec_size: usize, len: usize) -> InstVector<F>{
 
         let mut instbufarr = vec![];
@@ -49,13 +53,13 @@ impl<F: Field>  InstVector<F>{
     }
 
 #[derive(Debug,Clone)]
-struct AdviceVector<F: Field>{
+struct AdviceVector<F: FieldExt>{
     data: Vec<Column<Advice>>,
     len: usize,
     _marker: PhantomData<F>,
 }
 
-impl<F: Field>  AdviceVector<F>{
+impl<F: FieldExt>  AdviceVector<F>{
     pub fn new_adv_vec(meta: &mut ConstraintSystem<F>, vec_size: usize, len: usize) -> AdviceVector<F>{
         let mut advbufarr = vec![];
         for _i in 0..vec_size{
@@ -74,23 +78,24 @@ impl<F: Field>  AdviceVector<F>{
     }
 
 #[derive(Debug,Clone)]
-struct LogRegConfig<F: Field>{
+struct LogRegConfig<F: FieldExt>{
     image: AdviceVector<F>,
     kernel: AdviceVector<F>,
     inter: AdviceVector<F>,
+    relu: AdviceVector<F>,
     y: InstVector<F>,
     selmul: Selector,
     _marker: PhantomData<F>,
 }
 
 #[derive(Debug,Clone)]
-struct LogRegChip<F: Field>{
+struct LogRegChip<F: FieldExt>{
     config: LogRegConfig<F>,
     _marker: PhantomData<F>,
 }
 
 
-impl<F:Field> LogRegChip<F>  {
+impl<F:FieldExt> LogRegChip<F>  {
     
     
     pub fn configure(meta: &mut ConstraintSystem<F>) -> LogRegConfig<F> {
@@ -98,6 +103,7 @@ impl<F:Field> LogRegChip<F>  {
         let image = AdviceVector::new_adv_vec(meta, imwid, imlen);
         let kernel = AdviceVector::new_adv_vec(meta, kerwid, kerlen);
         let inter = AdviceVector::new_adv_vec(meta, conwid, conlen) ;
+        let relu = AdviceVector::new_adv_vec(meta, conwid, conlen) ;
         let y = InstVector::new_ins_vec(meta, conwid, conlen);
         let selmul = meta.selector();
 
@@ -138,8 +144,8 @@ impl<F:Field> LogRegChip<F>  {
             for i in 0..conwid{
                 condash.push(vec![]);
                 for j in 0..conlen {
-                    let mut conval = Expression::Constant(F::ZERO);                 
-                    // let mut conval = Expression::Constant(F::ONE);   // A bug to test circuit               
+                    let mut conval = Expression::Constant(F::zero());                 
+                    // let mut conval = Expression::Constant(F::one());   // A bug to test circuit               
                     for k in 0..kerwid{
                         for l in 0..kerlen{
                             conval = conval + (imgcells[i+k][j+l].clone()*kercells[k][l].clone());
@@ -157,10 +163,13 @@ impl<F:Field> LogRegChip<F>  {
         });
         
 
+
+
         LogRegConfig{
             image,
             kernel,
             inter,
+            relu,
             y,
             selmul,
             _marker: PhantomData,
@@ -173,12 +182,12 @@ impl<F:Field> LogRegChip<F>  {
 
 #[derive(Debug,Clone)]
 
-struct LogRegCircuit<F: Field>{
+struct LogRegCircuit<F: FieldExt>{
     mdata: TwoDVec<F>,
     xdata: TwoDVec<F>,
 }
 
-impl<F: Field> Circuit<F> for LogRegCircuit<F>{
+impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
     
     type Config = LogRegConfig<F>;
     type FloorPlanner = SimpleFloorPlanner;
@@ -230,7 +239,7 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
             for i in 0..conwid{
                 convcells.push(vec![]);
                 for j in 0..conlen {
-                    let mut conval = Value::known(F::ZERO);                    
+                    let mut conval = Value::known(F::zero());                    
                     for k in 0..kerwid{
                         for l in 0..kerlen{
                             conval = conval + (imgcells[i+k][j+l].value().copied()*kercells[k][l].value());
@@ -246,9 +255,27 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
             };
             
         };
+
+        let mut relcells = vec![];
+            for i in 0..conwid{
+                relcells.push(vec![]);
+                for j in 0..conlen {
+                    let mut zero = Value::known(F::zero());                    
+                    let rel_val = convcells[i][j].clone().value().copied().zip(zero).map(|(a,b)| {if a.gt(&b) {a} else {b}} );
+                   
+                let rel_cell = region.assign_advice(||"relu".to_owned()+&i.to_string()+&j.to_string(),
+                 config.relu.data[i], 
+                 j, 
+                 || rel_val)?;
+                relcells[i].push(rel_cell);   
+            };
+            
+        };
+
+
             
 
-            Ok(convcells)
+            Ok(relcells)
 
 
         });
@@ -269,11 +296,11 @@ impl<F: Field> Circuit<F> for LogRegCircuit<F>{
 
 // Alter the dims here //
 
-static imlen: usize = 4;
-static kerlen: usize = 2;
+static imlen: usize = 8;
+static kerlen: usize = 3;
 static conlen: usize = imlen-kerlen+1;
-static imwid: usize = 4;
-static kerwid: usize = 2;
+static imwid: usize = 8;
+static kerwid: usize = 3;
 static conwid: usize = imwid-imwid+1;
 
 fn main(){
@@ -289,7 +316,8 @@ fn main(){
         for i in 0..kerwid{
         let mut mvec = Vec::new();
             for j in 0..kerlen{
-                let mut buf = Fp::random(&mut rng);
+                let rand_int:u64 = rng.gen();
+                let mut buf = Fp::from(rand_int);
                 mvec.push(buf);
          }
          filter.push(mvec);
@@ -300,7 +328,7 @@ fn main(){
         for i in 0..imwid{
         let mut xvec = Vec::new();
             for j in 0..imlen{
-                let mut buf = Fp::random(&mut rng);
+                let mut buf = Fp::from(rng.gen_range(0..255));
                 xvec.push(buf);
          }
          image.push(xvec);
@@ -309,15 +337,17 @@ fn main(){
         // Calculating Output
 
         let mut convimage = vec![];
+        let zero = Fp::zero();
         for i in 0..conwid{
             convimage.push(Vec::new());
             for j in 0..conlen {
-                let mut conval = Fp::ZERO;
+                let mut conval = Fp::zero();
                 for k in 0..kerwid{
                     for l in 0..kerlen{
                         conval.add_assign(image[i+k][j+l].clone().mul(&filter[k][l]));
                     }
                 }
+            if conval.gt(&zero) {conval = conval;} else{conval = zero;} //relu
             convimage[i].push(conval);
             }
         }
@@ -328,7 +358,7 @@ fn main(){
         for i in 0..conwid{
             wrongconvimage.push(Vec::new());
             for j in 0..conlen {
-                let mut conval = Fp::ONE; // Bug Here
+                let mut conval = Fp::one(); // Bug Here
                 for k in 0..kerwid{
                     for l in 0..kerlen{
                         conval.add_assign(image[i+k][j+l].clone().mul(&filter[k][l]));
@@ -338,6 +368,8 @@ fn main(){
             }
         }
         
+
+
 
         let circuit = LogRegCircuit {
             mdata: TwoDVec::new(filter),
