@@ -316,8 +316,7 @@ fn main(){
         for i in 0..kerwid{
         let mut mvec = Vec::new();
             for j in 0..kerlen{
-                let rand_int:u64 = rng.gen();
-                let mut buf = Fp::from(rand_int);
+                let mut buf = Fp::from(rng.gen::<u64>());
                 mvec.push(buf);
          }
          filter.push(mvec);
