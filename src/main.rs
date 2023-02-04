@@ -1,16 +1,26 @@
-// use ff::FieldExt;
-use halo2_proofs::arithmetic::FieldExt;
-use std::cmp::Ordering;
+use halo2_proofs::arithmetic::{FieldExt, Group};
 use rand::{self, Rng};
 use std::marker::PhantomData;
 use std::ops::{AddAssign};
 use std::vec;
-use halo2_proofs::circuit::{Chip, Layouter, SimpleFloorPlanner, Value};
-use halo2_proofs::plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector, Expression, Constraints};
+use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner, Value};
+use halo2_proofs::plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector, Expression, Constraints, TableColumn};
 use halo2_proofs::poly::Rotation;
 use halo2_proofs::{dev::MockProver, pasta::Fp};
 
 
+// Considering a random image and filter with below dimensions 
+
+static IMLEN: usize = 8;
+static KERLEN: usize = 3;
+static CONLEN: usize = IMLEN-KERLEN+1;
+static IMWID: usize = 8;
+static KERWID: usize = 8;
+static CONWID: usize = IMWID-KERWID+1;
+static MAX_CONV_VAL: usize =  255*5*KERLEN*KERWID; // max possible positive number in conv operation.
+
+// pixel range = [0,255]
+// kernel range = [-5,5]
 
 #[derive(Debug,Clone)]
 struct TwoDVec<F: FieldExt> {
@@ -26,6 +36,9 @@ impl<F: FieldExt> TwoDVec<F> {
     }
 
 }
+
+// Instance Vector
+
 #[derive(Debug,Clone)]
 struct InstVector<F: FieldExt>{
     data: Vec<Column<Instance>>,
@@ -52,6 +65,8 @@ impl<F: FieldExt>  InstVector<F>{
         }
     }
 
+// Advice Vector
+
 #[derive(Debug,Clone)]
 struct AdviceVector<F: FieldExt>{
     data: Vec<Column<Advice>>,
@@ -77,6 +92,47 @@ impl<F: FieldExt>  AdviceVector<F>{
         }
     }
 
+// Lookup Table: [0:MAXCONVVALUE]
+
+// Contains all possible positive values, output of a ReLU function should belong to this table
+
+#[derive(Debug, Clone)]
+struct ReLULoookUp<F: FieldExt> {
+        relop: TableColumn,
+        _marker: PhantomData<F>,
+}
+impl<F: FieldExt> ReLULoookUp<F> {
+        fn configure(meta: &mut ConstraintSystem<F>) -> Self {
+            let relop = meta.lookup_table_column();
+    
+            Self {
+                relop,
+                _marker: PhantomData,
+            }
+        }
+        fn load(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
+            layouter.assign_table(
+                || "relu lookup table",
+                |mut table| {
+                    let range = MAX_CONV_VAL as i32;
+                    let mut offset = 0;
+                    for i in 0..=range {
+                            table.assign_cell(
+                                || "relop",
+                                self.relop ,
+                                offset,
+                                || Value::known(F::from(i as u64)),
+                            )?;
+                        
+                    offset += 1; 
+                    }
+    
+                    Ok(())
+                },
+            )
+        }
+    }
+
 #[derive(Debug,Clone)]
 struct LogRegConfig<F: FieldExt>{
     image: AdviceVector<F>,
@@ -85,8 +141,11 @@ struct LogRegConfig<F: FieldExt>{
     relu: AdviceVector<F>,
     y: InstVector<F>,
     selmul: Selector,
+    selrel: Selector,
+    reltable: ReLULoookUp<F>,
     _marker: PhantomData<F>,
 }
+
 
 #[derive(Debug,Clone)]
 struct LogRegChip<F: FieldExt>{
@@ -100,40 +159,43 @@ impl<F:FieldExt> LogRegChip<F>  {
     
     pub fn configure(meta: &mut ConstraintSystem<F>) -> LogRegConfig<F> {
         
-        let image = AdviceVector::new_adv_vec(meta, imwid, imlen);
-        let kernel = AdviceVector::new_adv_vec(meta, kerwid, kerlen);
-        let inter = AdviceVector::new_adv_vec(meta, conwid, conlen) ;
-        let relu = AdviceVector::new_adv_vec(meta, conwid, conlen) ;
-        let y = InstVector::new_ins_vec(meta, conwid, conlen);
+        let image = AdviceVector::new_adv_vec(meta, IMWID, IMLEN);
+        let kernel = AdviceVector::new_adv_vec(meta, KERWID, KERLEN);
+        let inter = AdviceVector::new_adv_vec(meta, CONWID, CONLEN) ;
+        let relu = AdviceVector::new_adv_vec(meta, CONWID, CONLEN) ;
+        let y = InstVector::new_ins_vec(meta, CONWID, CONLEN);
         let selmul = meta.selector();
 
   
+        let selrel = meta.complex_selector();
+        let reltable  = ReLULoookUp::configure(meta);
+
         meta.create_gate("conv", |meta|{
 
             let s = meta.query_selector(selmul);
 
             let mut imgcells = vec![];
-            for i in 0..imwid{
+            for i in 0..IMWID{
                 imgcells.push(Vec::new());
-                for j in 0..imlen{
+                for j in 0..IMLEN{
                     let buf = meta.query_advice(image.data[i], Rotation(j as i32));
                     imgcells[i].push(buf);
                 }
             }
 
             let mut kercells = vec![];
-            for i in 0..kerwid{
+            for i in 0..KERWID{
                 kercells.push(Vec::new());
-                for j in 0..kerlen{
+                for j in 0..KERLEN{
                     let buf = meta.query_advice(kernel.data[i], Rotation(j as i32));
                     kercells[i].push(buf);
                 }
             }
 
             let mut concells = vec![];
-            for i in 0..conwid{
+            for i in 0..CONWID{
                 concells.push(Vec::new());
-                for j in 0..conlen{
+                for j in 0..CONLEN{
                     let buf = meta.query_advice(inter.data[i], Rotation(j as i32));
                     concells[i].push(buf);
                 }
@@ -141,13 +203,13 @@ impl<F:FieldExt> LogRegChip<F>  {
 
             let mut condash = vec![];
             let mut diff = vec![];
-            for i in 0..conwid{
+            for i in 0..CONWID{
                 condash.push(vec![]);
-                for j in 0..conlen {
+                for j in 0..CONLEN {
                     let mut conval = Expression::Constant(F::zero());                 
-                    // let mut conval = Expression::Constant(F::one());   // A bug to test circuit               
-                    for k in 0..kerwid{
-                        for l in 0..kerlen{
+                    // let mut conval = Expression::Constant(F::one());   // A bug                
+                    for k in 0..KERWID{
+                        for l in 0..KERLEN{
                             conval = conval + (imgcells[i+k][j+l].clone()*kercells[k][l].clone());
                         }
                     }
@@ -157,13 +219,26 @@ impl<F:FieldExt> LogRegChip<F>  {
             }
             
         }
-
-            Constraints::with_selector(s, diff)
-            
+        Constraints::with_selector(s, diff)   
         });
         
+  
+            for i in 0..CONWID{
+                for j in 0..CONLEN{
 
+                    meta.lookup(|meta| {
+                        let mut  diff = vec![];
+                        let selrel = meta.query_selector(selrel);
+                        
+                        let valueop = meta.query_advice(relu.data[i], Rotation(j as i32));
 
+                    diff.push((selrel.clone()*valueop , reltable.relop));
+
+                    diff
+                     });
+
+                }
+            }
 
         LogRegConfig{
             image,
@@ -172,6 +247,8 @@ impl<F:FieldExt> LogRegChip<F>  {
             relu,
             y,
             selmul,
+            selrel,
+            reltable,
             _marker: PhantomData,
        }
 }
@@ -200,8 +277,10 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
 
     fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<F>) -> Result<(), Error> {
         
+        config.reltable.load(&mut layouter)?;
         let image = &self.xdata.data;
         let kernel = &self.mdata.data;
+        
         
     
         let convvalue = layouter.assign_region(|| "layer1", |mut region|{
@@ -210,9 +289,9 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
             
 
             let mut imgcells = vec![];
-            for i in 0..imwid{
+            for i in 0..IMWID{
                 imgcells.push(Vec::new());
-                for j in 0..imlen{
+                for j in 0..IMLEN{
 
                 let i_cell = region.assign_advice(||"image".to_owned()+&i.to_string()+&j.to_string(),
                  config.image.data[i], 
@@ -223,9 +302,9 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
             };
 
             let mut kercells = vec![];
-            for i in 0..kerwid{
+            for i in 0..KERWID{
                 kercells.push(Vec::new());
-                for j in 0..kerlen{
+                for j in 0..KERLEN{
 
                 let k_cell = region.assign_advice(||"kernel".to_owned()+&i.to_string()+&j.to_string(),
                     config.kernel.data[i], 
@@ -236,12 +315,12 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
             };
 
             let mut convcells = vec![];
-            for i in 0..conwid{
+            for i in 0..CONWID{
                 convcells.push(vec![]);
-                for j in 0..conlen {
+                for j in 0..CONLEN {
                     let mut conval = Value::known(F::zero());                    
-                    for k in 0..kerwid{
-                        for l in 0..kerlen{
+                    for k in 0..KERWID{
+                        for l in 0..KERLEN{
                             conval = conval + (imgcells[i+k][j+l].value().copied()*kercells[k][l].value());
                         };
                     };
@@ -256,12 +335,22 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
             
         };
 
+        config.selrel.enable(&mut region, 0)?;
+
+
         let mut relcells = vec![];
-            for i in 0..conwid{
+            for i in 0..CONWID{
                 relcells.push(vec![]);
-                for j in 0..conlen {
-                    let mut zero = Value::known(F::zero());                    
-                    let rel_val = convcells[i][j].clone().value().copied().zip(zero).map(|(a,b)| {if a.gt(&b) {a} else {b}} );
+                for j in 0..CONLEN {
+                    let maxconvval = Value::known(F::from(MAX_CONV_VAL as u64));                 
+                    let rel_val = convcells[i][j].clone().value().copied().zip(maxconvval).map(|(a,b)| {
+                        let  zero = F::zero(); 
+                        if a.gt(&b) 
+                        {zero} 
+                        else 
+                        {a}
+                    } );
+                    // let rel_val = convcells[i][j].clone().value().copied(); // DANGER replace the above equation with this to check the lookup constraints and equality constraints.
                    
                 let rel_cell = region.assign_advice(||"relu".to_owned()+&i.to_string()+&j.to_string(),
                  config.relu.data[i], 
@@ -271,18 +360,14 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
             };
             
         };
-
-
-            
-
             Ok(relcells)
 
 
         });
 
         let yxz = convvalue.unwrap().clone();
-        Ok(for i in 0..conwid{
-            for j in 0..conlen{
+        Ok(for i in 0..CONWID{
+            for j in 0..CONLEN{
         let xyz = &yxz[i][j];
         layouter.constrain_instance(xyz.cell() , config.y.data[i], j);
          } 
@@ -293,89 +378,71 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
     
 }
 
-
-// Alter the dims here //
-
-static imlen: usize = 8;
-static kerlen: usize = 3;
-static conlen: usize = imlen-kerlen+1;
-static imwid: usize = 8;
-static kerwid: usize = 3;
-static conwid: usize = imwid-imwid+1;
-
 fn main(){
 
-    let k = 16;
+    let k = 16; // Alter based on # of rows
 
         let mut rng = rand::thread_rng();
         
-
-        
         // Random Filter
         let mut filter = Vec::new();
-        for i in 0..kerwid{
+        for i in 0..KERWID{
         let mut mvec = Vec::new();
-            for j in 0..kerlen{
-                let mut buf = Fp::from(rng.gen::<u64>());
-                mvec.push(buf);
+            for j in 0..KERLEN{
+                let mut buf = Fp::zero();
+                let random_value:f32 = rng.gen_range(-5.0..=5.0);
+                let x = random_value.round() as i32;
+                if x < 0
+                { buf = Fp::from(x as u64);
+                buf = buf.neg();} 
+               else 
+               { buf = Fp::from(x as u64);} 
+               mvec.push(buf);
          }
          filter.push(mvec);
         }
     
+
         // Random Image
         let mut image = Vec::new();
-        for i in 0..imwid{
+        for i in 0..IMWID{
         let mut xvec = Vec::new();
-            for j in 0..imlen{
-                let mut buf = Fp::from(rng.gen_range(0..255));
+            for j in 0..IMLEN{
+                let x = rng.gen_range(0..=255);
+                let mut buf = Fp::from(x);
                 xvec.push(buf);
          }
          image.push(xvec);
         }
 
+        
         // Calculating Output
-
         let mut convimage = vec![];
+        let max_pos_val = Fp::from(MAX_CONV_VAL as u64);
         let zero = Fp::zero();
-        for i in 0..conwid{
+        for i in 0..CONWID{
             convimage.push(Vec::new());
-            for j in 0..conlen {
+            for j in 0..CONLEN {
                 let mut conval = Fp::zero();
-                for k in 0..kerwid{
-                    for l in 0..kerlen{
+                for k in 0..KERWID{
+                    for l in 0..KERLEN{
                         conval.add_assign(image[i+k][j+l].clone().mul(&filter[k][l]));
                     }
                 }
-            if conval.gt(&zero) {conval = conval;} else{conval = zero;} //relu
+            if conval.gt(&max_pos_val) {conval = zero;} else{conval = conval;} //relu
             convimage[i].push(conval);
             }
         }
-        
-        // Wrong Output
-
-        let mut wrongconvimage = vec![];
-        for i in 0..conwid{
-            wrongconvimage.push(Vec::new());
-            for j in 0..conlen {
-                let mut conval = Fp::one(); // Bug Here
-                for k in 0..kerwid{
-                    for l in 0..kerlen{
-                        conval.add_assign(image[i+k][j+l].clone().mul(&filter[k][l]));
-                    }
-                }
-            wrongconvimage[i].push(conval);
-            }
-        }
-        
-
-
+      
 
         let circuit = LogRegCircuit {
             mdata: TwoDVec::new(filter),
             xdata: TwoDVec::new(image),
         };
 
-        let public_input = convimage; // wrongconvimage use this for testing
+        let public_input = convimage; 
+
+        // MockProver
         let prover = MockProver::run(k, &circuit, public_input.clone());
         // prover.unwrap().assert_satisfied();
         match prover.unwrap().verify(){
@@ -383,7 +450,10 @@ fn main(){
             Err(_) => {println!("Not proved!")}
 
         }
-       
-}
+            
+        }
+        
+
+
 
 

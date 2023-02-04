@@ -3,15 +3,6 @@
 version = 3
 
 [[package]]
-name = "Halo2CNNWIP"
-version = "0.1.0"
-dependencies = [
- "ff 0.13.0",
- "halo2_proofs",
- "rand",
-]
-
-[[package]]
 name = "arrayref"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -161,6 +152,15 @@ dependencies = [
  "ff 0.12.1",
  "rand_core",
  "subtle",
+]
+
+[[package]]
+name = "halo2_cnn"
+version = "0.1.0"
+dependencies = [
+ "ff 0.13.0",
+ "halo2_proofs",
+ "rand",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "Halo2CNNWIP"
+name = "halo2_cnn"
 version = "0.1.0"
 edition = "2021"
 
