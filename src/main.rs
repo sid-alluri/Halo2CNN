@@ -7,6 +7,7 @@ use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector, Expression, Constraints, TableColumn};
 use halo2_proofs::poly::Rotation;
 use halo2_proofs::{dev::MockProver, pasta::Fp};
+use std::time::{Duration, Instant};
 
 
 // Considering a random image and filter with below dimensions 
@@ -283,7 +284,7 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
         
         
     
-        let convvalue = layouter.assign_region(|| "layer1", |mut region|{
+        let cnn = layouter.assign_region(|| "layer1", |mut region|{
            
             config.selmul.enable(&mut region, 0)?;
             
@@ -365,11 +366,11 @@ impl<F: FieldExt> Circuit<F> for LogRegCircuit<F>{
 
         });
 
-        let yxz = convvalue.unwrap().clone();
+        let buf = cnn.unwrap().clone();
         Ok(for i in 0..CONWID{
             for j in 0..CONLEN{
-        let xyz = &yxz[i][j];
-        layouter.constrain_instance(xyz.cell() , config.y.data[i], j);
+        let buf1 = &buf[i][j];
+        layouter.constrain_instance(buf1.cell() , config.y.data[i], j);
          } 
         })
         
@@ -443,13 +444,18 @@ fn main(){
         let public_input = convimage; 
 
         // MockProver
+        let start = Instant::now();
         let prover = MockProver::run(k, &circuit, public_input.clone());
+        let duration = start.elapsed();
+
         // prover.unwrap().assert_satisfied();
         match prover.unwrap().verify(){
             Ok(()) => { println!("Yes proved!")},
             Err(_) => {println!("Not proved!")}
 
         }
+        println!("Time taken by MockProver: {:?}", duration);
+
             
         }
         
